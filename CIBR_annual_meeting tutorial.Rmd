@@ -1,0 +1,255 @@
+---
+title: "FLARE cloud-based analysis tutorial"
+output: 
+  - html_document
+  - github_document
+date: '2022-07-26'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objectives
+
+1. Introduction to new function in FLAREr that will generate tabular output (csv) that is more easily accessable via cloud storage. 
+2. Introduction to new function in FLAREr that scores forecasts
+3. Explore cloud-based tools to accessing forecasts and scores from s3 storage
+4. Analyze forests and scores using ggplot visualizations
+
+## Big vision
+
+The goal is to develop a shared set of tools for analyzing forecasts that can be used in FLARE and in the NEON Ecological Forecasting Challenge
+
+### Simulations 
+
+The simulations that you are analyzing in the tutorial are from prototype forecasts using the FLAREr + LER.  It includes weekly forecasts with data assimilation for three different models (`ms1_ler_flare_GLM`, `ms1_ler_flare_Simstrat`, `ms1_ler_flare_GOTM`).  These `model_id`s are defined by the `sim_name` variable in the FLARE configuration.
+
+### New tabular output
+
+There is a new function in FLAREr called `write_forecast_csv()` that convert the output from `run_da_forecast()` into a csv file.
+
+```{r eval = FALSE}
+forecast_file <- FLAREr::write_forecast_csv(da_forecast_output = da_forecast_output,
+                                            forecast_output_directory = config$file_path$forecast_output_directory,
+                                            use_short_filename = TRUE)
+
+```
+
+The csv file is long format (EFI standards) with the following columns.
+
+```{r}
+read_csv("https://s3.flare-forecast.org/forecasts/tutorial/fcre/fcre-2018-08-03-ms1_ler_flare_GOTM.csv.gz")
+```
+
+Importantly, the csv can not be used to restart FLARE so workflows still need to include a call to `write_forecast_netcdf()` and generate the netcdf output.
+
+### Introduction to new function in FLAREr that scores forecasts
+
+FLAREr now includes a function that scores the csv forecasts using the targets file that is generated in the FLARE workflow.  First the "targets" file needs to be in the following Long format.  This format is slightly different than the format that has been recently used in FLARE workflows.  
+
+```{r}
+read_csv("https://s3.flare-forecast.org/targets/tutorial/fcre/fcre-targets-insitu.csv")
+```
+`generate_forecast_score()`
+
+```{r eval = FALSE}
+dir.create(file.path(lake_directory, "scores", config$location$site_id, config$run_config$sim_name), recursive = TRUE, showWarnings = FALSE)
+FLAREr::generate_forecast_score(targets_file = file.path(config$file_path$qaqc_data_directory,paste0(config$location$site_id, "-targets-insitu.csv")),
+                                      forecast_file = forecast_file,
+                                      output_directory = file.path(lake_directory, "scores", config$location$site_id, config$run_config$sim_name))
+```
+
+
+```{r}
+read_csv("https://s3.flare-forecast.org/scores/tutorial/fcre/ms1_ler_flare_GLM/score-fcre-2018-08-10-ms1_ler_flare_GLM.csv.gz")
+```
+- Matches observations to forecasts by combining the site_id and depth into a single variable that is used for joining the targets and forecasts (so depths must match in the targets and forecast)
+- Calculates scores that require the full ensemble (crps and log)
+- Metrics that RMSE need to be calculated using the observation-forecast pairs in the file because they require calculating the means of a group of observation-forecast pairs.
+- Uses the `score4cast` package on Github developed for the EFI-RCN Challenge (see appendix for example of how the `score4cast` package is used in FLAREr)
+
+### Accessing forecast and scores
+
+The `arrow` allows us to remotely access, filter, subset, and do simple calculations before moving the data the computer where you are doing your analysis
+
+```{r eval = FALSE}
+install.packages("arrow")
+```
+
+Starting an analysis with arrow involves two steps:
+
+1) First you need to establish the connection with the remote server
+
+```{r}
+s3 <- arrow::s3_bucket(bucket = "forecasts/tutorial", 
+                       endpoint_override =  "s3.flare-forecast.org",
+                       anonymous = TRUE)
+s3
+```
+
+2) You need to open the dataset.  This only discovers the specific columns and column types of the dataset and does not actually read in the data yet
+
+```{r}
+df <- arrow::open_dataset(s3, format = "csv")
+df
+```
+
+3) You need to `collect()` the data. Subsetting the data through filters, selects, and summaries can help speed up the transfer of data. 
+
+```{r}
+focal_date <- lubridate::as_datetime("2018-08-10 00:00:00")
+d <- df |> 
+  dplyr::filter(start_time == focal_date) |> 
+  dplyr::collect()
+```
+
+Now we are ready for visualizing.  Here is a plot for visualizing a single forecast with all ensemble members shown
+
+```{r}
+d |> 
+  filter(depth == 1.0,
+         variable == "temperature",
+         model_id == "ms1_ler_flare_GLM") |> 
+  ggplot(aes(x = lubridate::as_datetime(time), y = predicted, group = ensemble)) +
+  geom_line()
+```
+
+And one with all ensemble member from all three LER models (GLM, GOTM, and Simstrat)
+
+```{r}
+d |> 
+  filter(depth == 1.0,
+         variable == "temperature") |> 
+  mutate(model_ensemble = paste0(model_id, "_", ensemble)) |>  
+  ggplot(aes(x = lubridate::as_datetime(time), y = predicted, group = model_ensemble)) +
+  geom_line()
+
+```
+
+You can calculate summary statistics prior to the `collect()`
+
+```{r}
+
+focal_date <- lubridate::as_datetime("2018-08-10 00:00:00")
+d <- df |> 
+  dplyr::filter(start_time == focal_date,
+                variable == "temperature",
+                depth == 1.0,
+                forecast == 1) |> 
+  dplyr::group_by(time, model_id) |> 
+  dplyr::summarize(mean = mean(predicted)) |> 
+  dplyr::collect()
+```
+
+```{r}
+d |> 
+  ggplot(aes(x = lubridate::as_datetime(time), y = mean, color = model_id)) +
+  geom_line()
+```
+
+Similar to the analyzing forecasts, we can use `arrow` to help analyze scores on the s3 bucket.  The key difference is that many of the score columns have NA values because there are not observations for all forecasted variable and time-steps.  The columns with NA do not get detected by arrow so we have to define the schema (i.e. the column types): 
+
+```{r}
+s <- arrow::schema(
+    target_id = arrow::string(),
+    model_id = arrow::string(),
+    pub_time = arrow::string(),
+    site_id = arrow::string(),
+    time = arrow::timestamp("s",timezone = "UTC"),
+    variable= arrow::string(),
+    mean= arrow::float64(),
+    sd= arrow::float64(),
+    observed= arrow::float64(),
+    crps= arrow::float64(),
+    logs= arrow::float64(),
+    quantile02.5= arrow::float64(),
+    quantile10= arrow::float64(),
+    quantile90= arrow::float64(),
+    quantile97.5= arrow::float64(),
+    start_time = arrow::timestamp("s",timezone = "UTC"),
+    horizon= arrow::int64())
+```
+
+Now we can read in the scores (note the use of schema and skip when opening the dataset)
+
+```{r }
+s3 <- arrow::s3_bucket("scores/tutorial", 
+                              endpoint_override =  "s3.flare-forecast.org",
+                              anonymous=TRUE)
+df <- arrow::open_dataset(s3, format = "csv", schema = s, skip = 1)
+
+```
+
+Lets go ahead and collect the full dataset (the dataset isn't that big yet)
+
+```{r}
+
+d <- df |> collect()
+
+```
+
+The site and depth are a combined variable in the score because each depth is considered a separate site when joining the targets and forecasts.  Here we separate them back out.
+
+```{r}
+d <- d |> 
+  mutate(depth = as.numeric(stringr::str_split_fixed(site_id, pattern = "-", n = 2)[,2]))
+```
+
+Now lets visualize the summarized and scored forecast
+
+```{r}
+d |> 
+  filter(depth == 1.0, variable == "temperature") |> 
+  ggplot(aes(x = time, y = mean, color = factor(start_time))) +
+  geom_ribbon((aes(ymin = quantile10, ymax = quantile90, color = factor(start_time),fill = factor(start_time))), alpha = 0.3) + 
+  geom_line(aes(y = mean)) + 
+  geom_point(aes(y = observed),color = "black") +
+  facet_grid(~model_id)
+
+```
+
+### Exercise
+
+1. Read in the scores for only the `ms1_ler_flare_GOTM` model_id
+2. Group_by(horizon) and summarize the CRPS score using the mean
+3. Plot how CRPS changes as horizon increases for the `ms1_ler_flare_GOTM` model_id
+4. (Bonus) repeat 1. but don't filter by model_id and repeat 2 but across group_by model_id, plot how the change CRPS over horizon differs for the three models.
+
+```{r}
+#Put code here
+
+```
+
+### Apenddix 
+
+#### Scoring a forecast with the score4cast package
+
+```{r eval = FALSE}
+target <- readr::read_csv("https://s3.flare-forecast.org/targets/tutorial/fcre/fcre-targets-insitu.csv", show_col_types = FALSE) |>
+    dplyr::rename(z = depth) |>
+    dplyr::mutate(x = NA,
+                  y = NA,
+                  target_id = "fcre",
+                  site_id = paste0(site_id,"-",z))
+
+s3 <- arrow::s3_bucket(bucket = "forecasts/tutorial", 
+                       endpoint_override =  "s3.flare-forecast.org",
+                       anonymous=TRUE)
+df <- arrow::open_dataset(s3,
+                          format = "csv")
+
+focal_date <- lubridate::as_datetime("2018-08-10 00:00:00")
+
+score <- df |> 
+  filter(start_time ==focal_date,
+         model_id == "ms1_ler_flare_GLM",
+         variable == "temperature") |> 
+  collect() |> 
+  dplyr::mutate(site_id = paste0(site_id,"-",depth)) |>
+    score4cast::crps_logs_score(target) |>
+    mutate(horizon = time-start_time) |>
+    mutate(horizon = as.numeric(lubridate::as.duration(horizon),
+                                units = "seconds"),
+           horizon = horizon / 86400) 
+```
