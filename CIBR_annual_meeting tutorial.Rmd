@@ -8,11 +8,12 @@ date: '2022-07-26'
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library("tidyverse")
 ```
 
 ## Objectives
 
-1. Introduction to new function in FLAREr that will generate tabular output (csv) that is more easily accessable via cloud storage. 
+1. Introduction to new function in FLAREr that will generate tabular output (csv) that is more easily accessible via cloud storage. 
 2. Introduction to new function in FLAREr that scores forecasts
 3. Explore cloud-based tools to accessing forecasts and scores from s3 storage
 4. Analyze forests and scores using ggplot visualizations
@@ -46,7 +47,7 @@ Importantly, the csv can not be used to restart FLARE so workflows still need to
 
 ### Introduction to new function in FLAREr that scores forecasts
 
-FLAREr now includes a function that scores the csv forecasts using the targets file that is generated in the FLARE workflow.  First the "targets" file needs to be in the following Long format.  This format is slightly different than the format that has been recently used in FLARE workflows.  
+FLAREr now includes a function that scores the csv forecasts using the targets file that is generated in the FLARE workflow.  First the "targets" file needs to be in the following long format.  This format is slightly different than the format that has been recently used in FLARE workflows.  
 
 ```{r}
 read_csv("https://s3.flare-forecast.org/targets/tutorial/fcre/fcre-targets-insitu.csv")
@@ -99,6 +100,7 @@ df
 
 ```{r}
 focal_date <- lubridate::as_datetime("2018-08-10 00:00:00")
+
 d <- df |> 
   dplyr::filter(start_time == focal_date) |> 
   dplyr::collect()
@@ -226,6 +228,9 @@ d |>
 #### Scoring a forecast with the score4cast package
 
 ```{r eval = FALSE}
+
+remotes::install_github("eco4cast/score4cast")
+
 target <- readr::read_csv("https://s3.flare-forecast.org/targets/tutorial/fcre/fcre-targets-insitu.csv", show_col_types = FALSE) |>
     dplyr::rename(z = depth) |>
     dplyr::mutate(x = NA,
@@ -236,8 +241,7 @@ target <- readr::read_csv("https://s3.flare-forecast.org/targets/tutorial/fcre/f
 s3 <- arrow::s3_bucket(bucket = "forecasts/tutorial", 
                        endpoint_override =  "s3.flare-forecast.org",
                        anonymous=TRUE)
-df <- arrow::open_dataset(s3,
-                          format = "csv")
+df <- arrow::open_dataset(s3, format = "csv")
 
 focal_date <- lubridate::as_datetime("2018-08-10 00:00:00")
 
