@@ -80,7 +80,7 @@ install.packages("arrow")
 
 Starting an analysis with arrow involves two steps:
 
-1) First you need to establish the connection with the remote server
+1) First you need to establish the connection with the remote server. It should say `SubTreeFileSystem: s3://forecasts/tutorial/` below if the connection was successful.
 
 ```{r}
 s3 <- arrow::s3_bucket(bucket = "forecasts/tutorial", 
@@ -89,14 +89,14 @@ s3 <- arrow::s3_bucket(bucket = "forecasts/tutorial",
 s3
 ```
 
-2) You need to open the dataset.  This only discovers the specific columns and column types of the dataset and does not actually read in the data yet
+2) You need to open the dataset.  This only discovers the specific columns and column types of the dataset and does not actually read in the data yet.  The "schema" (i.e., column variables and types) will be showed below.
 
 ```{r}
 df <- arrow::open_dataset(s3, format = "csv")
 df
 ```
 
-3) You need to `collect()` the data. Subsetting the data through filters, selects, and summaries can help speed up the transfer of data. 
+3) You need to `collect()` the data. Subsetting the data through filters, selects, and summaries can help speed up the transfer of data.  A data.frame should be shown below
 
 ```{r}
 focal_date <- lubridate::as_datetime("2018-08-10 00:00:00")
@@ -104,6 +104,8 @@ focal_date <- lubridate::as_datetime("2018-08-10 00:00:00")
 d <- df |> 
   dplyr::filter(start_time == focal_date) |> 
   dplyr::collect()
+
+d
 ```
 
 Now we are ready for visualizing.  Here is a plot for visualizing a single forecast with all ensemble members shown
@@ -117,7 +119,7 @@ d |>
   geom_line()
 ```
 
-And one with all ensemble member from all three LER models (GLM, GOTM, and Simstrat)
+And one with all ensemble members from all three LER models (GLM, GOTM, and Simstrat)
 
 ```{r}
 d |> 
@@ -144,13 +146,15 @@ d <- df |>
   dplyr::collect()
 ```
 
+then visualize
+
 ```{r}
 d |> 
   ggplot(aes(x = lubridate::as_datetime(time), y = mean, color = model_id)) +
   geom_line()
 ```
 
-Similar to the analyzing forecasts, we can use `arrow` to help analyze scores on the s3 bucket.  The key difference is that many of the score columns have NA values because there are not observations for all forecasted variable and time-steps.  The columns with NA do not get detected by arrow so we have to define the schema (i.e. the column types): 
+Similar to the analyzing forecasts, we can use `arrow` to help analyze scores on the s3 bucket.  The key difference is that many of the score columns have NA values because there are not observations for all forecasted variable and time-steps.  The columns with `NA` do not get detected by arrow so we have to define the schema (i.e., the column types): 
 
 ```{r}
 s <- arrow::schema(
@@ -173,7 +177,7 @@ s <- arrow::schema(
     horizon= arrow::int64())
 ```
 
-Now we can read in the scores (note the use of schema and skip when opening the dataset)
+Now we can read in the scores (note the use of `schema` and `skip` when opening the dataset)
 
 ```{r }
 s3 <- arrow::s3_bucket("scores/tutorial", 
@@ -183,7 +187,7 @@ df <- arrow::open_dataset(s3, format = "csv", schema = s, skip = 1)
 
 ```
 
-Lets go ahead and collect the full dataset (the dataset isn't that big yet)
+Lets go ahead and `collect()` the full dataset (the dataset isn't that big yet)
 
 ```{r}
 
@@ -191,7 +195,7 @@ d <- df |> collect()
 
 ```
 
-The site and depth are a combined variable in the score because each depth is considered a separate site when joining the targets and forecasts.  Here we separate them back out.
+The lake and depth are a combined variable in `site_id` in the score because each depth is considered a separate `site_id` when joining the targets and forecasts.  Here we separate them back out.
 
 ```{r}
 d <- d |> 
@@ -233,10 +237,8 @@ remotes::install_github("eco4cast/score4cast")
 
 target <- readr::read_csv("https://s3.flare-forecast.org/targets/tutorial/fcre/fcre-targets-insitu.csv", show_col_types = FALSE) |>
     dplyr::rename(z = depth) |>
-    dplyr::mutate(x = NA,
-                  y = NA,
-                  target_id = "fcre",
-                  site_id = paste0(site_id,"-",z))
+    dplyr::mutate(target_id = "fcre",
+                  site_id = paste0(site_id,"-",depth))
 
 s3 <- arrow::s3_bucket(bucket = "forecasts/tutorial", 
                        endpoint_override =  "s3.flare-forecast.org",
